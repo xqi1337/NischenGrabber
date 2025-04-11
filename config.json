@@ -1,0 +1,25 @@
+{
+  "MISC": {
+    "IMAGES": {
+      "mirrorimages": false,
+      "changebrightness": true,
+      "brightnessrate": 0.9,
+      "clearexif": true
+    },
+    "GRABBER": {
+      "maxthreads": 20,
+      "maxadspercat": 180
+    }
+  },
+  "INSERAT": {
+    "minprice": 100,
+    "maxprice": 1000,
+    "pricereduction": 0.9,
+    "minviews": 50,
+    "blacklist": true,
+    "gptrewrite": false,
+    "gptprompt": "Kannst du mir bitte den folgenden Text umschreiben in sachlichen Deutsch mit ein paar adjektiven aber nicht zuvielen. Bitte alle notwendigen Informationen beibehalten und nicht ew\u00c3\u00a4hnen das du den Text umgeschrieben hast bzw was du am Text gemacht hast, da ich den Text direkt kopieren m\u00c3\u00b6chte, es handelt sich um die Beschreibung von einem Produkt, das ich Privat verkaufe auf einem Kleinanzeigen Portal: "
+  },
+  "chrome_binary": "C:/Program Files/Google/Chrome/Application/chrome.exe",
+  "DEBUG_MODE": false
+}
