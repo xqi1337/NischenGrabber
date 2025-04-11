@@ -24,12 +24,14 @@
 ├── blacklist.txt
 ├── config.json
 ├── main.py
-├── inserate/
-│   └── Kategorie/
-│       ├── text.txt
-│       └── Pics/
-│           ├── pic0.jpg
-│           └── ...
+inserate/
+└── Kleinanzeigen/
+    └── Elektronik/
+        └── 500€ iPhone_14_Pro/
+            ├── Pics/
+            │   ├── pic0.jpg
+            │   └── pic1.jpg
+            └── inserat.json
 ```
 
 ---
