@@ -8,27 +8,13 @@ import random
 import requests
 import piexif
 import concurrent.futures
-import logging
+import pytgpt.yepchat as yepchat
 from itertools import repeat
 from PIL import Image, ImageEnhance, UnidentifiedImageError
 from io import BytesIO
 from selectolax.parser import HTMLParser
 from tqdm import tqdm
 from datetime import datetime
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-import undetected_chromedriver as uc
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
-)
-logger = logging.getLogger(__name__)
 
 
 # GLOBAL FUNCTIONS
@@ -37,107 +23,104 @@ def loadconfig(configpath):
         with open(configpath, "r") as configfile:
             config = json.load(configfile)
             return config
-    except FileNotFoundError:
+    except FileExistsError:
         print("ERROR: Config not found")
         return False
     except json.JSONDecodeError:
         print("ERROR: Config corrupted")
         return False
 
-
 def loadblacklist():
-    try:
-        with open("blacklist.txt", "r") as blacklistfile:
-            bl = blacklistfile.read().splitlines()
-    except FileNotFoundError:
-        return []
-    return bl
-
+        try:
+            with open("blacklist.txt","r") as blacklistfile:
+                bl = blacklistfile.read().splitlines()
+        except FileNotFoundError:
+            return False
+        return bl
 
 def createinseratfolder(path):
-    base_dir = os.path.join("inserate", "Kleinanzeigen")
-    full_path = os.path.join(base_dir, path)
-    try:
-        os.makedirs(os.path.join(full_path, "Pics"), exist_ok=True)
-        return full_path
-    except Exception as e:
-        logger.error(f"Ordnerfehler: {e}")
-        return None
+    inseratepath = "inserate/" + path
 
 
-def editimage(image, mirrorimage, changebrightness, clearexif, brightnessrate, file_path):
-    exif_bytes = None
-    try:
-        if changebrightness:
-            enhancer = ImageEnhance.Brightness(image)
-            image = enhancer.enhance(brightnessrate)
-        if mirrorimage:
-            image = image.transpose(Image.FLIP_LEFT_RIGHT)
-        if clearexif:
-            exif_dict = {"0th": {}, "Exif": {}}
-            exif_dict["0th"][piexif.ImageIFD.Model] = "iPhone 14 Pro"
-            now = datetime.now().strftime("%Y:%m:%d %H:%M:%S")
-            exif_dict["0th"][piexif.ImageIFD.DateTime] = now
-            exif_dict["Exif"][piexif.ExifIFD.FNumber] = (178, 100)
-            exif_dict["Exif"][piexif.ExifIFD.ExposureTime] = (1, 125)
-            exif_dict["Exif"][piexif.ExifIFD.ISOSpeedRatings] = 100
-            exif_dict["Exif"][piexif.ExifIFD.FocalLength] = (686, 100)
-            exif_bytes = piexif.dump(exif_dict)
-            data = list(image.getdata())
-            image_without_exif = Image.new(image.mode, image.size)
-            image_without_exif.putdata(data)
-            image = image_without_exif
+    if not os.path.exists(inseratepath):
+        os.makedirs(inseratepath + "/Pics")
+        return inseratepath
 
-        # Ensure the directory exists
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+def editimage(image,mirrorimage,changebrightness,clearexif,brightnessrate,file_path):
+    image = image
 
-        image.save(file_path, "jpeg", exif=exif_bytes if exif_bytes else image.info.get('exif'))
-        return True
-    except Exception as e:
-        logger.error(f"Error editing image: {e}")
-        return False
+    if changebrightness:
+        enhancer = ImageEnhance.Brightness(image)
+        image = enhancer.enhance(brightnessrate)
+    if mirrorimage:
+        image = image.transpose(Image.FLIP_LEFT_RIGHT)
+    if clearexif:
+        exif_dict = {"0th": {}, "Exif": {}}
+
+        # Kameramodell
+        exif_dict["0th"][piexif.ImageIFD.Model] = "iPhone 14 Pro"
+
+        # Aufnahmedatum
+        now = datetime.now().strftime("%Y:%m:%d %H:%M:%S")
+        exif_dict["0th"][piexif.ImageIFD.DateTime] = now
+
+        # Kameraeinstellungen
+        exif_dict["Exif"][piexif.ExifIFD.FNumber] = (178, 100)  # f/1.78
+        exif_dict["Exif"][piexif.ExifIFD.ExposureTime] = (1, 125)  # 1/125 Sekunde
+        exif_dict["Exif"][piexif.ExifIFD.ISOSpeedRatings] = 100
+        exif_dict["Exif"][piexif.ExifIFD.FocalLength] = (686, 100)  # 6.86 mm
+
+        exif_bytes = piexif.dump(exif_dict)
+
+        data = list(image.getdata())
+        image_without_exif = Image.new(image.mode, image.size)
+        image_without_exif.putdata(data)
+
+        image = image_without_exif
+
+    image.save(file_path, "jpeg", exif=exif_bytes)
 
 
 def download_image(url, file_path, config):
     try:
-        # Create directory if it doesn't exist
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
+        response = requests.get(url)
         image = Image.open(BytesIO(response.content))
-        return editimage(
-            image,
-            config['MISC']['IMAGES']['mirrorimages'],
-            config['MISC']['IMAGES']['changebrightness'],
-            config['MISC']['IMAGES']['clearexif'],
-            config['MISC']['IMAGES']['brightnessrate'],
-            file_path
+        newimage = editimage(
+        image,
+        config['MISC']['IMAGES']['mirrorimages'],
+        config['MISC']['IMAGES']['changebrightness'],
+        config['MISC']['IMAGES']['clearexif'],
+        config['MISC']['IMAGES']['brightnessrate'],
+        file_path
         )
-    except (requests.RequestException, UnidentifiedImageError, OSError) as e:
-        logger.error(f"Error downloading image {url}: {e}")
-        return False
+    
+    except requests.RequestException as e:
+        print(f"Fehler beim Herunterladen des Bildes: {e}")
 
-
-# TERMINAL UI
+def gptrewrite(gptobj,gptpromt,gpttext):
+    return gptobj.chat(f"{gptpromt} {gpttext}")
+# TERMINAL UI 
 class UI:
     def __init__(self):
         self.banner = r'''
                                        ______
                     |\_______________ (_____\\______________
-            HH======#H###############H#######################    NISCHENGRABBER 
-                    ' ~""""""""""""""`##(_))#H\"""""Y########      xqi
-                                      ))    \#H\       `"Y### 
+            HH======#H###############H#######################    NISCHENGRABBER v1.00
+                    ' ~""""""""""""""`##(_))#H\"""""Y########       CNW: xqi 
+                                      ))    \#H\       `"Y###
                                       "      }#H)
+
         '''
         self.clear = lambda: os.system("cls") if sys.platform == "win32" else os.system("clear")
-        self.title = lambda title: os.system("title " + title) if sys.platform == "win32" else None
+        self.title = lambda title: os.system("title " + title) if sys.platform == "win32" else ""
+
         self.colors = {
             "reset": colorama.Fore.RESET,
             "main": colorama.Fore.LIGHTCYAN_EX,
             "maindark": colorama.Fore.CYAN,
             "accent": colorama.Fore.LIGHTMAGENTA_EX
         }
+
         self.cinput = lambda text: input(
             f"[{self.colors['accent']}${self.colors['reset']}] {self.colors['maindark']}{text}{self.colors['reset']} > ")
         self.success = lambda text: print(
@@ -146,7 +129,7 @@ class UI:
             f"[{colorama.Fore.LIGHTRED_EX}!{self.colors['reset']}] " + colorama.Fore.LIGHTRED_EX + text)
         self.status = lambda text: print(
             f"[{colorama.Fore.LIGHTYELLOW_EX}i{self.colors['reset']}] " + colorama.Fore.LIGHTYELLOW_EX + text)
-        self.menupoint = lambda id, text: print(
+        self.menupoint = lambda id,text: print(
             f" {self.colors['accent']}{id}{self.colors['reset']} > " + self.colors['main'] + text)
 
     def printbanner(self):
@@ -154,422 +137,134 @@ class UI:
         print(self.colors["main"] + self.banner)
 
 
+
 # KLAZ GRABBER
 class KlazGrabber:
-    def __init__(self, config, ui):
-        self.session = self._create_session()
+    def __init__(self,config,ui):
+        self.session = requests.session()
+        self.session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'})
         self.config = config
         self.ui = ui
-        self.driver = None
-        self.init_webdriver()
-
         if self.config['INSERAT']['blacklist']:
             self.blacklist = loadblacklist()
             if self.blacklist:
                 self.ui.success(f"Loaded Blacklist with {len(self.blacklist)} Keywords")
                 time.sleep(1)
         else:
-            self.blacklist = []
+            self.blacklist = False
+        if self.config['INSERAT']['gptrewrite']:
+            self.ai = yepchat.YEPCHAT()
 
-        # Create base directories if they don't exist
-        os.makedirs("inserate/Kleinanzeigen", exist_ok=True)
-        os.makedirs("inserate/links", exist_ok=True)
-
-    def _create_session(self):
-        # Create session with retry mechanism
-        session = requests.Session()
-
-        # Configure retry strategy
-        retry_strategy = Retry(
-            total=3,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["GET"]
-        )
-
-        # Increase pool_connections and pool_maxsize
-        adapter = HTTPAdapter(
-            max_retries=retry_strategy,
-            pool_connections=20,
-            pool_maxsize=20
-        )
-
-        session.mount("https://", adapter)
-        session.mount("http://", adapter)
-
-        # Set headers to mimic a real browser
-        session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-            'Accept-Language': 'de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Cache-Control': 'max-age=0',
-            'Sec-Ch-Ua': '"Google Chrome";v="119", "Chromium";v="119", "Not?A_Brand";v="24"',
-            'Sec-Ch-Ua-Mobile': '?0',
-            'Sec-Ch-Ua-Platform': '"Windows"',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Sec-Fetch-User': '?1'
-        })
-
-        return session
-
-    def init_webdriver(self):
-        try:
-            options = uc.ChromeOptions()
-            options.add_argument('--headless=new')
-            options.add_argument('--disable-blink-features=AutomationControlled')
-            options.add_argument('--disable-dev-shm-usage')
-            options.add_argument('--no-sandbox')
-            options.add_argument('--disable-gpu')
-            options.add_argument('--window-size=1920,1080')
-
-            # Add more realistic browser fingerprint
-            options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36')
-
-            # Close any existing driver
-            self.close_driver()
-
-            # Initialize new driver
-            self.driver = uc.Chrome(options=options)
-            self.driver.implicitly_wait(15)
-        except Exception as e:
-            logger.error(f"Error initializing webdriver: {e}")
-            # Retry initialization once
-            try:
-                if self.driver:
-                    self.driver.quit()
-                time.sleep(2)
-                self.driver = uc.Chrome(options=options)
-                self.driver.implicitly_wait(15)
-            except Exception as e2:
-                logger.error(f"Failed to initialize webdriver on retry: {e2}")
-                sys.exit(1)
-
-    def close_driver(self):
-        if self.driver:
-            try:
-                # Verbesserte Bereinigung
-                self.driver.service.process.kill()
-                self.driver.quit()
-            except Exception as e:
-                logger.warning(f"Error closing driver: {e}")
-            finally:
-                self.driver = None
-
+    
     def harvestcategories(self):
-        categories = []
-        try:
-            # Set cookies to avoid detection
-            self.driver.get("https://www.kleinanzeigen.de")
-            time.sleep(2)
+        categories = [] 
 
-            # Now get categories
-            self.driver.get("https://www.kleinanzeigen.de/s-kategorien.html")
+        req = self.session.get("https://www.kleinanzeigen.de/s-kategorien.html")
+        parser = HTMLParser(req.text)
 
-            # Wait for page to load
-            WebDriverWait(self.driver, 20).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, ".treelist-headline"))
-            )
+        tags = parser.css(".treelist-headline a")
 
-            # Handle potential CAPTCHA/Cloudflare
-            if "captcha" in self.driver.page_source.lower() or "cloudflare" in self.driver.page_source.lower():
-                self.ui.error("CAPTCHA/Cloudflare detected! Manual solution required.")
-                input("Press ENTER after you have solved the CAPTCHA...")
-                self.driver.refresh()
-                WebDriverWait(self.driver, 20).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, ".treelist-headline"))
-                )
+        for tag in tags:
+            href = tag.attributes.get('href', '')
+            text = tag.text()
 
-            parser = HTMLParser(self.driver.page_source)
-            tags = parser.css(".treelist-headline a")
+            categories.append((text.replace(" ","").replace("&","/").replace(",","/"),f'/{href.split("/")[1]}',href.split("/")[2]))
+        
+        return categories
 
-            for tag in tags:
-                href = tag.attrs.get('href', '')
-                if '/s-' in href:
-                    category_id = href.split('/')[-1]
-                    categories.append((
-                        tag.text().strip().replace(" ", ""),
-                        href,
-                        category_id
-                    ))
-            return categories
-        except Exception as e:
-            self.ui.error(f"Categories could not be loaded: {str(e)[:70]}")
-            return []
+    
+    def harvestsubcategories(self,categoryname,categoryurl,categoryid):
+        categories = [] 
 
-    def harvestsubcategories(self, categoryname, categoryurl, categoryid):
-        categories = [(categoryname, categoryurl, categoryid)]
+        categories.append((categoryname,categoryurl,categoryid))
+
+        req = self.session.get(f"https://www.kleinanzeigen.de/{categoryurl}/{categoryid}")
+        parser = HTMLParser(req.text)
+
+        tags = parser.css(".browsebox-itemlist")[2].css(".text-link-subdued")
+
+        for tag in tags:
+            href = tag.attributes.get('href', '')
+            text = tag.text()
+
+            categories.append((text.replace(" ","").replace("&","/").replace(",","/"),f'/{href.split("/")[1]}',href.split("/")[2]))
+        
+        return categories
+
+
+    def grabad(self, adlink,catname):
+        req = self.session.get(adlink)
+
+        parser = HTMLParser(req.text)
 
         try:
-            full_url = f"https://www.kleinanzeigen.de{categoryurl}"
-            self.ui.status(f"Fetching from: {full_url}")
+            title = parser.css_first('#viewad-title').text().replace("/","+").replace("\\","+").strip()
 
-            # Reset driver to avoid stale connection
-            self.init_webdriver()
+            if any(blkey in title for blkey in self.blacklist):
+                return
 
-            self.driver.get(full_url)
-            time.sleep(3)  # Add a longer delay
-
-            # Check for Cloudflare/CAPTCHA
-            if "cf-chl-bypass" in self.driver.current_url or "sorry" in self.driver.current_url or "captcha" in self.driver.page_source.lower():
-                self.ui.error("Cloudflare/CAPTCHA detected! Manual solution required.")
-                input("Press ENTER after you have solved the challenge...")
-                self.driver.refresh()
-                time.sleep(3)
-
-            try:
-                WebDriverWait(self.driver, 20).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, ".browsebox-sorting"))
-                )
-            except Exception:
-                self.ui.error("Could not find subcategories on the page")
-                # Return the main category if no subcategories found
-                return categories
-
-            parser = HTMLParser(self.driver.page_source)
-            subcat_links = parser.css('.browsebox-sorting a.text-link-subdued')
-
-            for link in subcat_links:
-                raw_href = link.attrs.get('href', '')
-                link_text = link.text(strip=True).replace(" ", "")
-
-                if raw_href.startswith('/s-'):
-                    cat_id = raw_href.split('/')[-1]
-                    categories.append((
-                        link_text,
-                        raw_href,
-                        cat_id
-                    ))
-            return categories
-
-        except Exception as e:
-            self.ui.error(f"Critical error: {str(e)[:70]}")
-            return categories
-
-    def process_ad(self, ad_info):
-        """Process a single ad from saved JSON data and return ad data if successful"""
-        try:
-            adlink = ad_info["url"]
-            catname = ad_info["category"]
-
-            session = self._create_session()
-            time.sleep(random.uniform(0.1, 0.5))
-            req = session.get(adlink, timeout=15)
-            req.raise_for_status()
-            parser = HTMLParser(req.text)
-
-            if "captcha" in req.text.lower() or "cloudflare" in req.text.lower() or "403 Forbidden" in req.text:
-                logger.warning(f"Access denied for ad: {adlink}")
-                return None
-
-            title_element = parser.css_first('#viewad-title')
-            if not title_element:
-                return None
-            title = title_element.text().replace("/", "+").replace("\\", "+").strip()
-
-            if self.blacklist and any(blkey.lower() in title.lower() for blkey in self.blacklist):
-                return None
-
-            price_element = parser.css_first('#viewad-price')
-            price_text = price_element.text() if price_element else ""
-            price = int(re.sub(r"\D", "", price_text)) if price_text and re.sub(r"\D", "", price_text) else 0
+            price = int(re.sub(r"\D", "", parser.css_first('#viewad-price').text()))
             newprice = round(price * self.config["INSERAT"]["pricereduction"])
-
-            description_element = parser.css_first('#viewad-description-text')
-            description = description_element.text().lstrip() if description_element else ""
-
-            addate_element = parser.css_first('#viewad-extra-info > div:nth-child(1) > span:nth-child(2)')
-            addate = addate_element.text().strip() if addate_element else ""
+            description = parser.css_first('#viewad-description-text').text().lstrip()
+            addate = parser.css_first('#viewad-extra-info > div:nth-child(1) > span:nth-child(2)').text().strip()
             grabdate = datetime.now()
+            adid = parser.css_first('.text-light-800 > li:nth-child(2)').text().strip()
+            adurl = adlink
+            images = parser.css('#viewad-image')
 
-            adid_element = parser.css_first('.text-light-800 > li:nth-child(2)') or parser.css_first(
-                'li[data-testid="ad-id"]')
-            if not adid_element:
-                return None
-            adid = re.sub(r"\D", "", adid_element.text().strip())
-
-            try:
-                views_req = session.get(f"https://www.kleinanzeigen.de/s-vac-inc-get.json?adId={adid}", timeout=10)
-                views = views_req.json().get("numVisits", 0) if views_req.status_code == 200 else 0
-            except Exception as e:
-                logger.warning(f"Failed to get view count: {e}")
-                views = 0
-
+            req = self.session.get(f"https://www.kleinanzeigen.de/s-vac-inc-get.json?adId={adid}")
+            views = req.json()["numVisits"]
+                
+        
             if views >= self.config['INSERAT']['minviews']:
-                safe_title = re.sub(r'[\\/*?:"<>|]', "_", title)[:50]
-                base_path = f"Kleinanzeigen/{catname.replace('/', '_')}/{price}€ {safe_title}"
-                inseratepath = createinseratfolder(base_path)
+                path = f"Kleinanzeigen/{catname.replace('/','')}/{price}€ {title}"
 
-                if inseratepath:
-                    try:
-                        images_downloaded = 0
-                        image_paths = []
-                        try:
-                            images = parser.css('img.galleryimage-element') or parser.css('#viewad-image')
-                            for i, image in enumerate(images):
-                                imageurl = image.attrs.get('src', '')
-                                if imageurl.startswith('//'):
-                                    imageurl = 'https:' + imageurl
-                                elif not imageurl.startswith('http'):
-                                    continue
+                path = createinseratfolder(path)
 
-                                success = download_image(
-                                    imageurl,
-                                    os.path.join(inseratepath, "Pics", f"pic{i}.jpg"),
-                                    self.config
-                                )
-                                if success:
-                                    images_downloaded += 1
-                                    image_paths.append(f"Pics/pic{i}.jpg")
-                                time.sleep(random.uniform(0.2, 0.5))
-                        except Exception as e:
-                            logger.warning(f"Image download error: {e}")
+                if self.config['INSERAT']['gptrewrite']:
+                    description = gptrewrite(self.ai,self.config['INSERAT']['gptprompt'],description)
 
-                        # Erstelle das Ad-Daten-Dictionary
-                        ad_data = {
-                            "link": adlink,
-                            "preis": {
-                                "original": price,
-                                "berechnet": newprice
-                            },
-                            "titel": title,
-                            "beschreibung": description,
-                            "bilder": image_paths,
-                            "metadaten": {
-                                "kategorie": catname,
-                                "erfasst_am": datetime.now().isoformat(),
-                                "inserat_id": adid,
-                                "aufrufe": views
-                            }
-                        }
+                if path:
+                    for image in images:
+                        imageurl = image.attributes.get('src', '')
+                        download_image(imageurl, path + "/Pics/" + f"pic{images.index(image)}.jpg",self.config)
 
-                        # Speichere JSON im Inseratsordner (Einzeldatei)
-                        try:
-                            json_path = os.path.join(inseratepath, "inserat.json")
-                            with open(json_path, 'w', encoding='utf-8') as f:
-                                json.dump(ad_data, f, indent=2, ensure_ascii=False)
-                            logger.debug(f"JSON gespeichert: {json_path}")
-                        except Exception as e:
-                            logger.error(f"Fehler beim Speichern einzelner JSON: {e}")
-                        # Rückgabe der wesentlichen Inseratsdaten (kann auch metadaten enthalten, falls gewünscht)
-                        return ad_data
+                    with open(path + "/text.txt", "w") as textfile:
+                        textfile.write(f"URL: {adurl}\nID: {adid}\nVIEWS: {views}\nCATEGORY: {catname}\nTITLE: {title}\nPRICE: {newprice}€\nADDATE: {addate}\nGRABDATE: {grabdate}\nDESCRIPTION: {description}")
+                        
+                    # self.ui.success(f"Successfully grabbed ad: {title} ({price})")
+        except AttributeError:
+            pass
+        except json.JSONDecodeError:
+            pass
+        except UnidentifiedImageError:
+            pass
+        except ValueError:
+            pass
 
-                    except PermissionError as e:
-                        logger.error(f"Ordnerberechtigungsfehler: {e}")
-                        return None
-                    except OSError as e:
-                        logger.error(f"Ordnererstellungsfehler: {e}")
-                        return None
 
-            return None
-
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 403:
-                logger.warning(f"Rate Limit erreicht für: {adlink}")
-            else:
-                logger.warning(f"HTTP Fehler {e.response.status_code}: {adlink}")
-            return None
-
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"Verbindungsfehler: {e}")
-            return None
-
-        except Exception as e:
-            logger.error(f"Kritischer Verarbeitungsfehler: {str(e)[:100]}")
-            return None
-
-    def process_saved_links(self, json_file=None):
-        """Process links from a saved JSON file and create a consolidated JSON file in 'inserate/Kleinanzeigen'"""
+    def harvestads(self,category,categoryid,categoryname):
         self.ui.printbanner()
+        links = set()
+        
+        for pageindex in tqdm(range(1,51),desc=f"{self.ui.colors['main']}Collecting Links",unit="pages"):
+            req = self.session.get(f"{category}/preis:{self.config['INSERAT']['minprice']}:{self.config['INSERAT']['maxprice']}/seite:{pageindex}/{categoryid}")
 
-        if not json_file:
-            links_files = [file for file in os.listdir("inserate/links") if file.endswith(".json")]
-            if not links_files:
-                self.ui.error("Keine gespeicherten Link-Dateien gefunden")
-                time.sleep(2)
+            if req.status_code == 302:  # ALLE SEITEN DURCH
                 return
+            
+            if req.ok:
+                parser = HTMLParser(req.text)
 
-            self.ui.status("Wähle eine Link-Datei zur Verarbeitung")
-            for i, file in enumerate(links_files):
-                self.ui.menupoint(f"{i}", file)
+                adlinktags = parser.css('.aditem a')
 
-            try:
-                selection = int(self.ui.cinput("Datei auswählen"))
-                json_file = os.path.join("inserate/links", links_files[selection])
-            except (ValueError, IndexError):
-                self.ui.error("Ungültige Auswahl")
-                time.sleep(2)
-                return
+                links.update(set(["https://www.kleinanzeigen.de" + adlinktag.attributes.get('href', '') for adlinktag in adlinktags]))
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.config['MISC']['GRABBER']['maxthreads']) as executor:
+            results = list(tqdm(executor.map(self.grabad, links, repeat(categoryname)),unit="ads",desc=f"{self.ui.colors['main']}Grabbing Ads",total=len(links)))
+    
 
-        try:
-            with open(json_file, 'r', encoding='utf-8') as f:
-                links_data = json.load(f)
-        except (json.JSONDecodeError, FileNotFoundError) as e:
-            self.ui.error(f"Fehler beim Laden der Link-Datei: {e}")
-            time.sleep(2)
-            return
-
-        unprocessed_links = [link for link in links_data if not link.get("processed", False)]
-        if not unprocessed_links:
-            self.ui.status("Alle Links in dieser Datei wurden bereits verarbeitet")
-            process_again = self.ui.cinput("Alle Links nochmal verarbeiten? (y/n)").lower()
-            if process_again == 'y':
-                unprocessed_links = links_data
-                for link in links_data:
-                    link["processed"] = False
-            else:
-                return
-
-        max_threads = min(self.config['MISC']['GRABBER']['maxthreads'], 20)
-        logger.info(f"Verarbeite {len(unprocessed_links)} Inserate mit {max_threads} Threads")
-
-        # Nutze ThreadPoolExecutor und sammle die von process_ad zurückgegebenen Daten
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_threads) as executor:
-            ad_results = list(tqdm(executor.map(self.process_ad, unprocessed_links),
-                                   unit="ads",
-                                   desc=f"{self.ui.colors['main']}Processing Ads",
-                                   colour="CYAN",
-                                   total=len(unprocessed_links)))
-
-        # Markiere alle Links als verarbeitet
-        for link in unprocessed_links:
-            link["processed"] = True
-        with open(json_file, 'w', encoding='utf-8') as f:
-            json.dump(links_data, f, indent=2)
-
-        # Konsolidiere alle erfolgreichen Ad-Daten in eine Liste (nur wesentliche Infos)
-        consolidated_ads = [
-            {
-                "link": ad["link"],
-                "preis": ad["preis"],
-                "titel": ad["titel"],
-                "beschreibung": ad["beschreibung"],
-                "bilder": ad["bilder"]
-            }
-            for ad in ad_results if ad is not None
-        ]
-
-        # Speichern in ein zentrales JSON im Ordner "inserate/Kleinanzeigen"
-        if consolidated_ads:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            consolidated_json_path = os.path.join("inserate", "Kleinanzeigen", f"consolidated_{timestamp}.json")
-            try:
-                with open(consolidated_json_path, 'w', encoding='utf-8') as f:
-                    json.dump(consolidated_ads, f, indent=2, ensure_ascii=False)
-                self.ui.success(f"JSON-Daten gespeichert in: {consolidated_json_path}")
-                logger.info(f"Alle Daten wurden im Kleinanzeigen-Ordner gespeichert")
-            except Exception as e:
-                self.ui.error(f"Fehler beim Speichern der konsolidierten JSON: {e}")
-                logger.error(f"Fehler: {e}")
-        else:
-            self.ui.status("Keine Inseratsdaten wurden erfolgreich verarbeitet.")
-        time.sleep(2)
-
-    def klaz_slct_cat(self, categories):
+    def klaz_slct_cat(self,categories):
         self.ui.printbanner()
         print("")
         self.ui.status("Select Category")
@@ -578,38 +273,237 @@ class KlazGrabber:
         for cat in categories:
             index = categories.index(cat)
             if index < 10:
-                self.ui.menupoint(id=f"{index} ", text=cat[0])
+                self.ui.menupoint(id=f"{index} ",text=cat[0])
             else:
-                self.ui.menupoint(id=f"{index}", text=cat[0])
-        self.ui.menupoint(id="C ", text="Custom Category")
+                self.ui.menupoint(id=f"{index}",text=cat[0])
+        #self.ui.menupoint(id="C ",text="Custom Category")
 
         try:
             command = self.ui.cinput("Select Category: ").lower()
 
-            if command != "c":
-                command = int(command)
-                cat = categories[command]
-            else:
-                catname = self.ui.cinput("Category name (Will be the folder in which the ads are saved)")
-                caturl = self.ui.cinput("Category rawurl (Example: '/s-audio-hifi')")
-                catid = self.ui.cinput("Category ID / Found in Url at the end (Example: 'c172')")
-                return (catname, caturl, catid)
-        except (ValueError, IndexError):
+            #if command != "c":
+            command = int(command)
+
+            cat = categories[command]
+            #else:
+            #    catname = self.ui.cinput("Category name (Will be the folder in which the ads are saved)")
+            #    caturl = self.ui.cinput("Category rawurl (Example: '/s-audio-hifi')")
+            #    catid = self.ui.cinput("Category ID / Found in Url at the end (Example: 'c172')")
+            #    return (catname,caturl,catid)
+        except ValueError or IndexError:
             self.ui.error("Not a valid Category")
             time.sleep(2)
-            return None
+            return
         return cat
 
-    def __del__(self):
+
+# WILLHABEN GRABBER
+class WillhabenGrabber:
+    def __init__(self,config,ui):
+        self.session = requests.session()
+        self.session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'})
+        self.ui = ui
+        self.config = config
+
+    def harvestcategories(self):
+        categories = [] 
+
+        req = self.session.get("https://www.willhaben.at/iad/kaufen-und-verkaufen")
+        parser = HTMLParser(req.text)
+
+        cattags = parser.css("a.jZyTjb")
+
+        del cattags[-1]
+
+        for tag in cattags:
+            link = tag.attributes.get("href")
+            title = tag.css_first("span").text()
+            categories.append((title.replace(" ","").replace("/","+"),f'https://www.willhaben.at{link}'))
+        
+        return categories
+    
+    def harvestsubcategories(self,categoryurl):
+        categories = [] 
+
+        req = self.session.get(categoryurl)
+        parser = HTMLParser(req.text)
+
+        tags = parser.css("a.eExgwP")
+
+        for tag in tags:
+            link = tag.attributes.get("href")
+            title = tag.css_first("span").text()
+            categories.append((title.replace(" ","").replace("/","+"),f'https://www.willhaben.at{link}'))
+
+        if len(categories) >= 1:
+            categories[0] = ("Ganze Kategorie",categories[0][1])
+
+        return categories
+
+    def grabad(self,url,catname):
+        req = self.session.get(url)  
+        parser = HTMLParser(req.text)
+
         try:
-            self.close_driver()
-        except:
-            pass
+            title = parser.css_first('.bNbmvL').text().replace("/","+").replace("\\","+").strip()
+
+            if any(blkey in title for blkey in self.blacklist):
+                return
+
+            price = int(re.sub(r"\D", "", parser.css_first('.fhfHOO > div:nth-child(1) > div:nth-child(1) > div:nth-child(1) > span:nth-child(1)').text()))
+            newprice = round(price * self.config["INSERAT"]["pricereduction"])
+            description = parser.css_first('.sc-e43c8c17-1 > p:nth-child(1)').text().lstrip()
+            addate = parser.css_first('.gUgppM > span:nth-child(1) > span:nth-child(1)').text().replace("Zuletzt geändert: ","").strip()
+            grabdate = datetime.now()
+            adid = parser.css_first('.gUgppM > span:nth-child(1) > span:nth-child(2)').text()
+            adurl = adlink
+            images = parser.css("img.sc-e72c1335-5")
+                
+        
+            
+            path = f"Willhaben/{catname.replace('/','')}/{price}€ {title}"
+
+            path = createinseratfolder(path)
+
+            if self.config['INSERAT']['gptrewrite']:
+                description = gptrewrite(self.ai,self.config['INSERAT']['gptprompt'],description)
+
+            if path:
+                for image in images:
+                    imageurl = image.attributes.get('src', '')
+                    download_image(imageurl, path + "/Pics/" + f"pic{images.index(image)}.jpg",self.config)
+
+                with open(path + "/text.txt", "w") as textfile:
+                    textfile.write(f"URL: {adurl}\nID: {adid}\nCATEGORY: {catname}\nTITLE: {title}\nPRICE: {newprice}€\nADDATE: {addate}\nGRABDATE: {grabdate}\nDESCRIPTION: {description}")
+                        
+                    # self.ui.success(f"Successfully grabbed ad: {title} ({price})")
+        except AttributeError as e:
+            print(e)
+        except json.JSONDecodeError as e:
+            print(e)
+        except UnidentifiedImageError as e:
+            print(e)
+        except ValueError as e:
+            print(e)
 
 
-# MAIN FUNCTION
+
+    def harvestads(self,url,name):
+        self.ui.printbanner()
+        ads = [] 
+        pagenum = 1
+        req = self.session.get(url + f"?rows=90&PRICE_FROM={self.config['INSERAT']['minprice']}&PRICE_TO={self.config['INSERAT']['minprice']}")
+
+        parser = HTMLParser(req.text)
+
+        while True:
+            if not len(ads) >= self.config['MISC']['GRABBER']['maxadspercat']:
+                self.ui.printbanner()
+                self.ui.status(f"Grabbing Ads | Page: {pagenum} | Total Ads: {len(ads)}")
+                nextpage = parser.css_first(".Pagination__PaginationList-sc-zvrf30-0 > li:nth-child(11) > a:nth-child(1)").attributes.get('href')
+                
+                try:
+                    adtagsjson = json.loads(parser.css_first("#skip-to-content > div:nth-child(1) script").text())
+                except AttributeError:
+                    break
+
+                for adtag in adtagsjson["itemListElement"]:
+                    ads.append("https://willhaben.at" + adtag["url"] + f"&rows=90&PRICE_FROM={self.config['INSERAT']['minprice']}&PRICE_TO={self.config['INSERAT']['minprice']}")
+
+                pagenum += 1
+
+                if not nextpage:
+                    break
+                else:
+                    req = self.session.get("https://willhaben.at" + nextpage)
+                    parser = HTMLParser(req.text)
+            else:
+                break
+            
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.config['MISC']['GRABBER']['maxthreads']) as executor:
+            results = list(tqdm(executor.map(self.grabad, ads, repeat(name)),unit="ads",desc=f"{self.ui.colors['main']}Grabbing Ads",total=len(ads)))
+
+        
+
+
+    def wh_slct_cat(self,categories):
+        self.ui.printbanner()
+        print("")
+        self.ui.status("Select Category")
+        print("")
+        id = 0
+        for cat in categories:
+            index = categories.index(cat)
+            if index < 10:
+                self.ui.menupoint(id=f"{index} ",text=cat[0])
+            else:
+                self.ui.menupoint(id=f"{index}",text=cat[0])
+
+        try:
+            command = self.ui.cinput("Select Category: ").lower()
+            command = int(command)
+            cat = categories[command]
+        except ValueError or IndexError:
+            self.ui.error("Not a valid Category")
+            time.sleep(2)
+            return
+        return cat
+
+
+
+
+
+# MAIN PROGRAM
+def kleinanzeigen(ui,config):
+    grabber = KlazGrabber(config,ui)
+
+    categories = grabber.harvestcategories()
+
+
+    cat = grabber.klaz_slct_cat(categories=categories)
+    
+    if cat:
+        categories = grabber.harvestsubcategories(cat[0],cat[1],cat[2])
+        cat = grabber.klaz_slct_cat(categories=categories)
+        try:
+            grabber.harvestads(f"https://www.kleinanzeigen.de{cat[1]}",f"{cat[2]}",cat[0])
+        except requests.exceptions.ConnectionError:
+            ui.error("Connection Error: No Internet or wrong category URL")
+    else:
+        return
+
+
+def willhaben(ui,config):
+    grabber = WillhabenGrabber(config,ui)
+    try:
+        cats = grabber.harvestcategories()
+        cat = grabber.wh_slct_cat(cats)
+    except IndexError:
+        ui.printbanner()
+        ui.error("Cant connect to Willhaben / No Connection or IP Limited (try again later)")
+        time.sleep(3)
+        return
+
+    if cat:
+        while True:
+            categories = grabber.harvestsubcategories(cat[1])
+            if len(categories) >= 1:
+                cat = grabber.wh_slct_cat(categories)
+            else:
+                newlink = "https://www.willhaben.at/iad/kaufen-und-verkaufen/marktplatz/" + cat[0].split("/")[-1]
+                cat = (newlink,cat[1])
+                break
+        try:
+            grabber.harvestads(cat[1],cat[0])
+        except requests.exceptions.ConnectionError:
+            ui.error("Connection Error: No Internet or wrong category URL")
+    else:
+        return
+    
+
 def main():
     colorama.init(autoreset=True)
+
     ui = UI()
     ui.printbanner()
 
@@ -617,117 +511,32 @@ def main():
     configpath = "config.json" if not configpath else configpath
 
     config = loadconfig(configpath)
-    if not config:
-        ui.error("Failed to load config. Exiting.")
-        time.sleep(2)
-        return
 
-    ui.success(f"Config ({configpath}) loaded successfully")
-    time.sleep(random.randint(1, 2))
-
-    config.setdefault('MISC', {})
-    config['MISC'].setdefault('GRABBER', {'maxthreads': 10, 'maxpages': 50})
-    config['MISC'].setdefault('IMAGES', {
-        'mirrorimages': False,
-        'changebrightness': False,
-        'clearexif': True,
-        'brightnessrate': 1.0
-    })
-
-    os.makedirs("inserate", exist_ok=True)
-    os.makedirs("inserate/links", exist_ok=True)
-    os.makedirs("inserate/Kleinanzeigen", exist_ok=True)
+    if config:
+        ui.success(f"Config ({configpath}) loaded successfully")
+    time.sleep(random.randint(1, 3))
 
     while True:
         ui.printbanner()
         print("")
-        ui.status("Main Menu")
+        ui.status("Mainmenu | Select Option")
         print("")
         ui.menupoint("X", "Exit Grabber")
         ui.menupoint("K", "Kleinanzeigen.de")
-        ui.menupoint("L", "Links verarbeiten und JSON erstellen")  # GEÄNDERTE BESCHREIBUNG
-        ui.menupoint("W", "Willhaben.at")
-        print("")
+        ui.menupoint("W", "Willhaben.at (Coming Soon)")
 
+        print("")
         command = ui.cinput("Select Module").lower()
 
-        if command == "x":
-            # Sauberer Exit
-            return
-        elif command == "k":
-            grabber = None
-            try:
-                grabber = KlazGrabber(config, ui)
-                cats = grabber.harvestcategories()
-                if not cats:
-                    ui.error("No categories found")
-                    time.sleep(2)
-                    continue
-
-                cat = grabber.klaz_slct_cat(cats)
-                if cat:
-                    subcats = grabber.harvestsubcategories(*cat)
-                    if subcats:
-                        selected_cat = grabber.klaz_slct_cat(subcats)
-                        if selected_cat:
-                            json_file = grabber.collect_links(selected_cat[1], selected_cat[2], selected_cat[0])
-                            if json_file:
-                                process_now = ui.cinput("Process the collected links now? (y/n)").lower()
-                                if process_now == 'y':
-                                    grabber.process_saved_links(json_file)
-
-            except Exception as e:
-                logger.error(f"Error in Kleinanzeigen module: {e}", exc_info=True)
-                ui.error(f"An error occurred: {str(e)[:70]}")
-                time.sleep(2)
-            finally:
-                if grabber:
-                    try:
-                        grabber.close_driver()
-                    except:
-                        pass
-        elif command == "l":
-            grabber = None
-            try:
-                grabber = KlazGrabber(config, ui)
-                grabber.process_saved_links()
-            except Exception as e:
-                logger.error(f"Error processing saved links: {e}", exc_info=True)
-                ui.error(f"An error occurred: {str(e)[:70]}")
-                time.sleep(2)
-            finally:
-                if grabber:
-                    try:
-                        grabber.close_driver()
-                    except:
-                        pass
-        elif command == "w":
-            ui.error("Module Willhaben.at is not yet implemented.")
-            time.sleep(2)
-        else:
-            ui.error("Invalid option")
-            time.sleep(1)
-
+        match command:
+            case "x":
+                sys.exit()
+            case "k":
+                kleinanzeigen(ui,config)
+            case "w":
+                willhaben(ui,config)
+            case _:
+                pass
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\nShutting down gracefully...")
-    except Exception as e:
-        print(f"Unexpected error: {e}")
-    finally:
-        # Make sure all Chrome processes are properly terminated
-        try:
-            import psutil
-
-            for proc in psutil.process_iter(['pid', 'name']):
-                if proc.info['name'] and 'chrome' in proc.info['name'].lower():
-                    try:
-                        proc.terminate()
-                    except:
-                        pass
-        except:
-            pass
-
-
+    main()
